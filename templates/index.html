@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PlateVision — YOLOv8 Detection</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+  <!-- Ambient background blobs -->
+  <div class="bg-blob blob-1"></div>
+  <div class="bg-blob blob-2"></div>
+  <div class="noise"></div>
+
+  <!-- NAV -->
+  <nav class="nav">
+    <div class="nav-brand">
+      <span class="brand-icon">⬡</span>
+      <span class="brand-name">PlateVision</span>
+      <span class="brand-sub">YOLOv8</span>
+    </div>
+    <div class="nav-status">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-label" id="statusLabel">Checking…</span>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <header class="hero">
+    <p class="hero-eyebrow">Computer Vision Pipeline</p>
+    <h1 class="hero-title">Licence Plate<br /><em>Detection</em></h1>
+    <p class="hero-sub">YOLOv8n · Real-time inference · End-to-end DVC pipeline</p>
+  </header>
+
+  <!-- CLASSIFIER -->
+  <section class="classifier">
+
+    <!-- LEFT: upload -->
+    <div class="card upload-card">
+      <div class="card-header">
+        <span class="card-label">INPUT IMAGE</span>
+        <span class="format-tags"><span>JPG</span><span>PNG</span><span>WEBP</span></span>
+      </div>
+
+      <div class="dropzone" id="dropzone">
+        <div class="drop-idle" id="dropIdle">
+          <div class="drop-icon">↑</div>
+          <p class="drop-title">Drop image here</p>
+          <p class="drop-hint">or click to browse</p>
+        </div>
+        <img class="preview-img hidden" id="previewImg" alt="preview" />
+        <input type="file" id="fileInput" accept="image/*" hidden />
+      </div>
+
+      <div class="file-meta hidden" id="fileMeta">
+        <div class="meta-pill"><span class="meta-key">FILE</span><span class="meta-val" id="metaName">—</span></div>
+        <div class="meta-pill"><span class="meta-key">SIZE</span><span class="meta-val" id="metaSize">—</span></div>
+        <div class="meta-pill"><span class="meta-key">DIMS</span><span class="meta-val" id="metaDims">—</span></div>
+      </div>
+
+      <button class="run-btn" id="runBtn" disabled>
+        <span class="btn-text">Run Inference</span>
+        <span class="btn-loader hidden" id="btnLoader">
+          <span></span><span></span><span></span>
+        </span>
+      </button>
+    </div>
+
+    <!-- RIGHT: result -->
+    <div class="card result-card">
+      <div class="card-header">
+        <span class="card-label">PREDICTION OUTPUT</span>
+        <span class="result-badge" id="resultBadge">—</span>
+      </div>
+
+      <!-- Idle state -->
+      <div class="result-idle" id="resultIdle">
+        <div class="pulse-rings">
+          <div class="ring r1"></div>
+          <div class="ring r2"></div>
+          <div class="ring r3"></div>
+          <span class="ring-icon">⬡</span>
+        </div>
+        <p>Upload an image to begin</p>
+      </div>
+
+      <!-- Result state -->
+      <div class="result-content hidden" id="resultContent">
+
+        <!-- Annotated image -->
+        <div class="annotated-wrap">
+          <img class="annotated-img" id="annotatedImg" alt="annotated" />
+          <span class="annotated-label">ANNOTATED OUTPUT</span>
+        </div>
+
+        <!-- Detection count -->
+        <div class="detection-summary" id="detectionSummary">
+          <span class="det-count" id="detCount">0</span>
+          <span class="det-label">plates detected</span>
+        </div>
+
+        <!-- Detection list -->
+        <div class="detections-list" id="detectionsList"></div>
+
+        <!-- Model meta -->
+        <div class="meta-grid">
+          <div class="meta-card"><span class="mc-key">MODEL</span><span class="mc-val">YOLOv8n</span></div>
+          <div class="meta-card"><span class="mc-key">INPUT SIZE</span><span class="mc-val">640 × 640</span></div>
+          <div class="meta-card"><span class="mc-key">FRAMEWORK</span><span class="mc-val">PyTorch</span></div>
+          <div class="meta-card"><span class="mc-key">LATENCY</span><span class="mc-val" id="latencyVal">—</span></div>
+        </div>
+
+        <!-- Raw JSON -->
+        <details class="raw-json">
+          <summary>RAW RESPONSE</summary>
+          <pre id="rawJson"></pre>
+        </details>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- PIPELINE SECTION -->
+  <section class="pipeline-section">
+    <h2 class="section-title">Pipeline Stages</h2>
+    <div class="pipeline-grid">
+      <div class="pipe-card" style="--i:0">
+        <span class="pipe-num">01</span>
+        <h3>Data Ingestion</h3>
+        <p>Downloads dataset from Google Drive via gdown, extracts and normalises folder structure into YOLO train/valid/test splits.</p>
+      </div>
+      <div class="pipe-card" style="--i:1">
+        <span class="pipe-num">02</span>
+        <h3>Data Validation</h3>
+        <p>Verifies all required splits and label files exist. Writes a status report before allowing training to proceed.</p>
+      </div>
+      <div class="pipe-card" style="--i:2">
+        <span class="pipe-num">03</span>
+        <h3>Data Transformation</h3>
+        <p>Copies splits to artifacts directory and rewrites data.yaml with absolute paths so YOLO resolves them correctly.</p>
+      </div>
+      <div class="pipe-card" style="--i:3">
+        <span class="pipe-num">04</span>
+        <h3>Model Training</h3>
+        <p>Fine-tunes YOLOv8n on the licence plate dataset. Saves best.pt and last.pt weights tracked by DVC.</p>
+      </div>
+      <div class="pipe-card" style="--i:4">
+        <span class="pipe-num">05</span>
+        <h3>Model Evaluation</h3>
+        <p>Runs validation to compute mAP50, mAP50-95, precision and recall. Saves metrics.json for experiment tracking.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- RETRAIN SECTION -->
+  <section class="retrain-section">
+    <div class="retrain-inner">
+      <div class="retrain-info">
+        <h2>Retrain Model</h2>
+        <p>Trigger a full pipeline run. All five stages will execute sequentially. This may take several minutes on CPU.</p>
+      </div>
+      <div class="retrain-controls">
+        <button class="retrain-btn" id="retrainBtn">▶ Start Training</button>
+        <div class="train-log hidden" id="trainLog">
+          <div class="log-header">TRAINING LOG</div>
+          <pre id="logContent"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>PlateVision · YOLOv8 Car Plate Detection</span>
+    <span id="footerClock"></span>
+  </footer>
+
+  <script src="/static/js/main.js"></script>
+</body>
+</html>
