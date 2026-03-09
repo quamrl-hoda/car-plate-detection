@@ -1,0 +1,54 @@
+# Deep Learning
+tensorflow>=2.12.0
+
+# Data handling
+numpy
+pandas
+Pillow
+
+# Config / utils
+python-box==6.0.2
+PyYAML
+ensure>=1.0.2
+tqdm
+
+# Dataset download
+gdown>=4.7.1
+
+# Web API
+flask
+flask-cors
+
+# Experiment tracking
+mlflow>=2.8.0
+dagshub
+
+# Dev / research
+notebook
+jupyterlab
+
+# Packaging
+setuptools
+
+opencv-python>=4.8.0
+
+
+# tensorflow==2.12.0
+# pandas 
+# dvc
+# mlflow==2.2.2
+# notebook
+# numpy
+# matplotlib
+# seaborn
+# python-box==6.0.2
+# pyYAML
+# tqdm
+# ensure==1.0.2
+# joblib
+# types-PyYAML
+# scipy
+# Flask
+# Flask-Cors
+# gdown
+# -e .

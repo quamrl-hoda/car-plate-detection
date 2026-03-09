@@ -1,0 +1,11 @@
+[project]
+name = "car-plate-detection"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "dvc>=3.66.1",
+    "opencv-python>=4.13.0.92",
+    "ultralytics>=8.4.21",
+]

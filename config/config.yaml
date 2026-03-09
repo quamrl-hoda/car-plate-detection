@@ -1,0 +1,46 @@
+artifacts_root: artifacts
+
+
+data_ingestion:
+  root_dir: artifacts/data_ingestion
+  source_URL: https://drive.google.com/file/d/1eQBQV-1ovhOrEyXDrUGurDYpdnOc0gbG/view?usp=sharing
+  local_data_file: artifacts/data_ingestion/data.zip
+  unzip_dir: artifacts/data_ingestion
+
+
+data_validation:
+  root_dir: artifacts/data_validation
+  data_dir: artifacts/data_ingestion
+  status_file: artifacts/data_validation/status.txt
+  required_files:
+    - train
+    - valid
+    - test
+
+
+data_transformation:
+  root_dir: artifacts/data_transformation
+  data_dir: artifacts/data_ingestion
+  image_size: 640
+
+
+model_trainer:
+  root_dir: artifacts/model_trainer
+  # Use the transformation data.yaml — it has correct absolute paths
+  data_yaml: artifacts/data_transformation/data.yaml
+  model_name: yolov8n.pt
+  epochs: 50
+  image_size: 640
+  batch_size: 16
+  project: artifacts/model_trainer
+  name: car_plate_detector
+
+
+model_evaluation:
+  root_dir: artifacts/model_evaluation
+  model_path: artifacts/model_trainer/car_plate_detector/weights/best.pt
+  data_yaml: artifacts/data_transformation/data.yaml
+  metric_file_name: artifacts/model_evaluation/metrics.json
+  image_size: 640
+  conf_threshold: 0.25
+  iou_threshold: 0.45
