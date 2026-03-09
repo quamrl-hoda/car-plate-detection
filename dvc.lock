@@ -5,8 +5,8 @@ stages:
     deps:
     - path: config/config.yaml
       hash: md5
-      md5: 483d25101d3bce0f9314cb323dbde5de
-      size: 1207
+      md5: 720d3232cada4a2ccb5d50481a9c9001
+      size: 1263
     - path: src/carPlateDetection/components/data_ingestion.py
       hash: md5
       md5: a04f77abc543b5d5a5aac52aaa1d2245
@@ -71,8 +71,8 @@ stages:
       nfiles: 172
     - path: config/config.yaml
       hash: md5
-      md5: 483d25101d3bce0f9314cb323dbde5de
-      size: 1207
+      md5: 720d3232cada4a2ccb5d50481a9c9001
+      size: 1263
     - path: src/carPlateDetection/components/data_validation.py
       hash: md5
       md5: 3f3f7fe9c7de56f3f3ae38383c909ca6
@@ -126,8 +126,8 @@ stages:
       size: 25
     - path: config/config.yaml
       hash: md5
-      md5: 483d25101d3bce0f9314cb323dbde5de
-      size: 1207
+      md5: 720d3232cada4a2ccb5d50481a9c9001
+      size: 1263
     - path: params.yaml
       hash: md5
       md5: 6a2c926c32afcee797b2d88b745fb58c
@@ -161,3 +161,112 @@ stages:
       md5: 42f75d53653875df8a0f28cbeae0b2c6.dir
       size: 212877958
       nfiles: 867
+  model_trainer:
+    cmd: python src/carPlateDetection/pipeline/stage_04_model_trainer.py
+    deps:
+    - path: artifacts/data_transformation
+      hash: md5
+      md5: 90ad9e4b6304e15609cbe680f0a6cddf.dir
+      size: 212961647
+      nfiles: 869
+    - path: config/config.yaml
+      hash: md5
+      md5: 720d3232cada4a2ccb5d50481a9c9001
+      size: 1263
+    - path: params.yaml
+      hash: md5
+      md5: 6a2c926c32afcee797b2d88b745fb58c
+      size: 1255
+    - path: src/carPlateDetection/components/model_trainer.py
+      hash: md5
+      md5: d48905476d02acdb2d0b5959ec0abcbe
+      size: 2470
+    - path: src/carPlateDetection/config/configuration.py
+      hash: md5
+      md5: 7bd92a16d930bae3455a7725dd021ed5
+      size: 3846
+    - path: src/carPlateDetection/entity/config_entity.py
+      hash: md5
+      md5: 1c63fefea5548428eff41f42a7cec6d6
+      size: 863
+    - path: src/carPlateDetection/pipeline/stage_04_model_trainer.py
+      hash: md5
+      md5: 09c40b4a9c52b9a737d49cf564d56b0a
+      size: 853
+    - path: src/carPlateDetection/utils/common.py
+      hash: md5
+      md5: 8786f25e036d8b66407cfd38d142d27a
+      size: 3279
+    params:
+      params.yaml:
+        TrainingArguments.augment: true
+        TrainingArguments.batch_size: 16
+        TrainingArguments.epochs: 1
+        TrainingArguments.image_size: 640
+        TrainingArguments.lr0: 0.01
+        TrainingArguments.lrf: 0.01
+        TrainingArguments.momentum: 0.937
+        TrainingArguments.optimizer: SGD
+        TrainingArguments.pretrained: true
+        TrainingArguments.seed: 0
+        TrainingArguments.warmup_epochs: 3.0
+        TrainingArguments.weight_decay: 0.0005
+    outs:
+    - path: artifacts/model_trainer/car_plate_detector/weights/best.pt
+      hash: md5
+      md5: 1ac460bf1c7d4230fc8b22e1927f77ca
+      size: 6243306
+    - path: artifacts/model_trainer/car_plate_detector/weights/last.pt
+      hash: md5
+      md5: 146ada8a35a3c33ca4fd0e3af1bb8f51
+      size: 6243306
+  model_evaluation:
+    cmd: python src/carPlateDetection/pipeline/stage_05_model_evaluation.py
+    deps:
+    - path: artifacts/data_transformation
+      hash: md5
+      md5: 90ad9e4b6304e15609cbe680f0a6cddf.dir
+      size: 212961647
+      nfiles: 869
+    - path: artifacts/model_trainer/car_plate_detector/weights/best.pt
+      hash: md5
+      md5: 1ac460bf1c7d4230fc8b22e1927f77ca
+      size: 6243306
+    - path: config/config.yaml
+      hash: md5
+      md5: 720d3232cada4a2ccb5d50481a9c9001
+      size: 1263
+    - path: params.yaml
+      hash: md5
+      md5: 6a2c926c32afcee797b2d88b745fb58c
+      size: 1255
+    - path: src/carPlateDetection/components/model_evaluation.py
+      hash: md5
+      md5: e6eff344fa37d5d43c3ba7a556c1c6f4
+      size: 1604
+    - path: src/carPlateDetection/config/configuration.py
+      hash: md5
+      md5: 7bd92a16d930bae3455a7725dd021ed5
+      size: 3846
+    - path: src/carPlateDetection/entity/config_entity.py
+      hash: md5
+      md5: 1c63fefea5548428eff41f42a7cec6d6
+      size: 863
+    - path: src/carPlateDetection/pipeline/stage_05_model_evaluation.py
+      hash: md5
+      md5: d7fbfe0eb9c220aae5941464126d7247
+      size: 889
+    - path: src/carPlateDetection/utils/common.py
+      hash: md5
+      md5: 8786f25e036d8b66407cfd38d142d27a
+      size: 3279
+    params:
+      params.yaml:
+        TrainingArguments.conf_threshold: 0.25
+        TrainingArguments.image_size: 640
+        TrainingArguments.iou_threshold: 0.45
+    outs:
+    - path: artifacts/model_evaluation/metrics.json
+      hash: md5
+      md5: 7a50e5e5de5a53d389fbb24a8350f28e
+      size: 108

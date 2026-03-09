@@ -26,12 +26,13 @@ data_transformation:
 
 model_trainer:
   root_dir: artifacts/model_trainer
-  # Use the transformation data.yaml — it has correct absolute paths
   data_yaml: artifacts/data_transformation/data.yaml
   model_name: yolov8n.pt
   epochs: 50
   image_size: 640
   batch_size: 16
+  # project must be the DIRECT parent of the run name folder.
+  # Using absolute resolution in code, so relative is fine here.
   project: artifacts/model_trainer
   name: car_plate_detector
 
