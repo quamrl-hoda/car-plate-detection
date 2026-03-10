@@ -1,5 +1,5 @@
 TrainingArguments:
-  epochs: 1
+  epochs: 100
   image_size: 640
   batch_size: 16
   lr0: 0.01               # Initial learning rate

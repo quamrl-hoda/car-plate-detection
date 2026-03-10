@@ -130,8 +130,8 @@ stages:
       size: 1263
     - path: params.yaml
       hash: md5
-      md5: 6a2c926c32afcee797b2d88b745fb58c
-      size: 1255
+      md5: 65eb15c750bf26ef727f842405a3bc99
+      size: 1257
     - path: src/carPlateDetection/components/data_transformation.py
       hash: md5
       md5: e47425907ec4a77167a4d2f0136ef3b9
@@ -175,8 +175,8 @@ stages:
       size: 1263
     - path: params.yaml
       hash: md5
-      md5: 6a2c926c32afcee797b2d88b745fb58c
-      size: 1255
+      md5: 65eb15c750bf26ef727f842405a3bc99
+      size: 1257
     - path: src/carPlateDetection/components/model_trainer.py
       hash: md5
       md5: d48905476d02acdb2d0b5959ec0abcbe
@@ -201,7 +201,7 @@ stages:
       params.yaml:
         TrainingArguments.augment: true
         TrainingArguments.batch_size: 16
-        TrainingArguments.epochs: 1
+        TrainingArguments.epochs: 100
         TrainingArguments.image_size: 640
         TrainingArguments.lr0: 0.01
         TrainingArguments.lrf: 0.01
@@ -214,12 +214,12 @@ stages:
     outs:
     - path: artifacts/model_trainer/car_plate_detector/weights/best.pt
       hash: md5
-      md5: 1ac460bf1c7d4230fc8b22e1927f77ca
-      size: 6243306
+      md5: 1a7594a99610480dc51af3e271c4ecf3
+      size: 6250474
     - path: artifacts/model_trainer/car_plate_detector/weights/last.pt
       hash: md5
-      md5: 146ada8a35a3c33ca4fd0e3af1bb8f51
-      size: 6243306
+      md5: e6a895a1ffdcb59c73e452905798f16f
+      size: 6250474
   model_evaluation:
     cmd: python src/carPlateDetection/pipeline/stage_05_model_evaluation.py
     deps:
@@ -230,16 +230,16 @@ stages:
       nfiles: 869
     - path: artifacts/model_trainer/car_plate_detector/weights/best.pt
       hash: md5
-      md5: 1ac460bf1c7d4230fc8b22e1927f77ca
-      size: 6243306
+      md5: 1a7594a99610480dc51af3e271c4ecf3
+      size: 6250474
     - path: config/config.yaml
       hash: md5
       md5: 720d3232cada4a2ccb5d50481a9c9001
       size: 1263
     - path: params.yaml
       hash: md5
-      md5: 6a2c926c32afcee797b2d88b745fb58c
-      size: 1255
+      md5: 65eb15c750bf26ef727f842405a3bc99
+      size: 1257
     - path: src/carPlateDetection/components/model_evaluation.py
       hash: md5
       md5: e6eff344fa37d5d43c3ba7a556c1c6f4
