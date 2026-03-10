@@ -1,12 +1,10 @@
 artifacts_root: artifacts
 
-
 data_ingestion:
   root_dir: artifacts/data_ingestion
   source_URL: https://drive.google.com/file/d/1eQBQV-1ovhOrEyXDrUGurDYpdnOc0gbG/view?usp=sharing
   local_data_file: artifacts/data_ingestion/data.zip
   unzip_dir: artifacts/data_ingestion
-
 
 data_validation:
   root_dir: artifacts/data_validation
@@ -17,12 +15,10 @@ data_validation:
     - valid
     - test
 
-
 data_transformation:
   root_dir: artifacts/data_transformation
   data_dir: artifacts/data_ingestion
   image_size: 640
-
 
 model_trainer:
   root_dir: artifacts/model_trainer
@@ -31,11 +27,8 @@ model_trainer:
   epochs: 50
   image_size: 640
   batch_size: 16
-  # project must be the DIRECT parent of the run name folder.
-  # Using absolute resolution in code, so relative is fine here.
   project: artifacts/model_trainer
   name: car_plate_detector
-
 
 model_evaluation:
   root_dir: artifacts/model_evaluation

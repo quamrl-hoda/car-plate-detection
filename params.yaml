@@ -1,34 +1,35 @@
 TrainingArguments:
-  epochs: 1
-  image_size: 640
-  batch_size: 16
-  lr0: 0.01               # Initial learning rate
-  lrf: 0.01               # Final learning rate (lr0 * lrf)
+  epochs: 3         # Must be 100+ to get mAP50 > 0 on this dataset
+  image_size: 416      # Smaller = faster on CPU; notebook used 320
+  batch_size: 8        # Lower than 16 avoids OOM on CPU
+  lr0: 0.01
+  lrf: 0.01
   momentum: 0.937
   weight_decay: 0.0005
   warmup_epochs: 3.0
   warmup_momentum: 0.8
   warmup_bias_lr: 0.1
-  box: 7.5                # Box loss gain
-  cls: 0.5                # Class loss gain
-  dfl: 1.5                # DFL loss gain
+  box: 7.5
+  cls: 0.5
+  dfl: 1.5
   conf_threshold: 0.25
   iou_threshold: 0.45
-  optimizer: SGD          # SGD | Adam | AdamW
-  seed: 0
+  optimizer: SGD
+  seed: 42
   deterministic: true
-  workers: 8
-  device: 0               # cuda device: 0 | cpu
+  workers: 0           # 0 = no multiprocessing (avoids Windows errors)
+  device: cpu
   pretrained: true
   augment: true
-  hsv_h: 0.015            # Image HSV-Hue augmentation
-  hsv_s: 0.7              # Image HSV-Saturation augmentation
-  hsv_v: 0.4              # Image HSV-Value augmentation
-  degrees: 0.0            # Image rotation (+/- deg)
-  translate: 0.1          # Image translation (+/- fraction)
-  scale: 0.5              # Image scale (+/- gain)
-  shear: 0.0              # Image shear (+/- deg)
-  flipud: 0.0             # Image flip up-down (probability)
-  fliplr: 0.5             # Image flip left-right (probability)
-  mosaic: 1.0             # Image mosaic (probability)
-  mixup: 0.0              # Image mixup (probability)
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 0.0
+  translate: 0.1
+  scale: 0.5
+  shear: 0.0
+  flipud: 0.0
+  fliplr: 0.5
+  mosaic: 1.0
+  mixup: 0.0
+  cache: false

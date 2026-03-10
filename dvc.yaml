@@ -1,8 +1,5 @@
 stages:
 
-  # ──────────────────────────────────────────────────────────────────
-  # Stage 1 — Data Ingestion
-  # ──────────────────────────────────────────────────────────────────
   data_ingestion:
     cmd: python src/carPlateDetection/pipeline/stage_01_data_ingestion.py
     deps:
@@ -13,10 +10,6 @@ stages:
       - src/carPlateDetection/utils/common.py
       - config/config.yaml
     outs:
-      # Only the zip is tracked by DVC cache.
-      # The extracted folders (train/valid/test) are produced alongside it
-      # in the same directory and are listed as non-cached outputs so DVC
-      # knows they exist without trying to cache the entire folder tree.
       - artifacts/data_ingestion/data.zip:
           cache: true
       - artifacts/data_ingestion/train:
@@ -28,9 +21,6 @@ stages:
       - artifacts/data_ingestion/data.yaml:
           cache: false
 
-  # ──────────────────────────────────────────────────────────────────
-  # Stage 2 — Data Validation
-  # ──────────────────────────────────────────────────────────────────
   data_validation:
     cmd: python src/carPlateDetection/pipeline/stage_02_data_validation.py
     deps:
@@ -47,9 +37,6 @@ stages:
       - artifacts/data_validation/status.txt:
           cache: false
 
-  # ──────────────────────────────────────────────────────────────────
-  # Stage 3 — Data Transformation
-  # ──────────────────────────────────────────────────────────────────
   data_transformation:
     cmd: python src/carPlateDetection/pipeline/stage_03_data_transformation.py
     deps:
@@ -72,9 +59,6 @@ stages:
       - artifacts/data_transformation:
           cache: true
 
-  # ──────────────────────────────────────────────────────────────────
-  # Stage 4 — Model Trainer
-  # ──────────────────────────────────────────────────────────────────
   model_trainer:
     cmd: python src/carPlateDetection/pipeline/stage_04_model_trainer.py
     deps:
@@ -106,9 +90,6 @@ stages:
       - artifacts/model_trainer/car_plate_detector/weights/last.pt:
           cache: true
 
-  # ──────────────────────────────────────────────────────────────────
-  # Stage 5 — Model Evaluation
-  # ──────────────────────────────────────────────────────────────────
   model_evaluation:
     cmd: python src/carPlateDetection/pipeline/stage_05_model_evaluation.py
     deps:

@@ -1,80 +1,56 @@
 """
-app.py — Production Flask API
-==============================
-Routes
-------
-GET  /              Serve UI (templates/index.html)
-GET  /health        Model readiness probe (Docker / K8s)
-POST /predict       Image inference  — multipart file OR base64 JSON
-POST /predict/video Video inference  — multipart file → annotated MP4
-GET  /train         Re-run full DVC pipeline, reset model cache
-GET  /debug         Diagnose label counts + metrics without retraining
+app.py — Flask web server for PlateVision
+==========================================
+Serves the HTML frontend and provides three REST endpoints:
 
-Environment variables
----------------------
-YOLO_CONF   float  confidence threshold  (default 0.25)
-YOLO_IOU    float  NMS IoU threshold     (default 0.45)
-YOLO_OCR    1|0    enable Tesseract OCR  (default 1)
-PORT        int    listen port           (default 8080)
+  GET  /              → renders templates/index.html
+  GET  /health        → JSON model readiness probe
+  POST /predict       → image inference (returns annotated image + detections)
+  POST /predict/video → video inference (returns annotated MP4)
 """
+
 import io
-import json
 import os
-import sys
-import uuid
-import base64
-import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
-from flask_cors import CORS, cross_origin
+from flask_cors import CORS
 
-# ── Windows CP-1252 console fix (YOLO logs contain emoji) ────────────
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer,  encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer,  encoding="utf-8", errors="replace")
-os.putenv("LANG",   "en_US.UTF-8")
-os.putenv("LC_ALL", "en_US.UTF-8")
-
-app = Flask(__name__)
+# ── App setup ────────────────────────────────────────────────────────────────
+app = Flask(__name__, template_folder="templates", static_folder="static")
 CORS(app)
 
-# ── Config ────────────────────────────────────────────────────────────
-MODEL_PATH    = Path("artifacts/model_trainer/car_plate_detector/weights/best.pt")
-UPLOAD_DIR    = Path("artifacts/uploads")
-CONF          = float(os.getenv("YOLO_CONF", "0.10"))
-IOU           = float(os.getenv("YOLO_IOU",  "0.40"))
-RUN_OCR       = os.getenv("YOLO_OCR", "1") == "1"
-PORT          = int(os.getenv("PORT", "8080"))
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# ── Model path resolution ─────────────────────────────────────────────────────
+# Prefer a trained best.pt; fall back to the pretrained yolov8n checkpoint.
+_TRAINED_MODEL  = Path("artifacts/model_trainer/car_plate_detector/weights/best.pt")
+_FALLBACK_MODEL = Path("yolov8n.pt")
+
+def _resolve_model() -> tuple[str, bool]:
+    """Return (model_path, is_fallback). Re-checks disk each call so dvc pull is picked up."""
+    if _TRAINED_MODEL.exists():
+        return str(_TRAINED_MODEL), False
+    return str(_FALLBACK_MODEL), True
+
+MODEL_PATH, _IS_FALLBACK = _resolve_model()
+
+# ── Lazy-load YOLO via the prediction pipeline ───────────────────────────────
+from src.carPlateDetection.pipeline.prediction_pipeline import (
+    get_model,
+    predict_image,
+)
+
+# Pre-warm the model at startup so /health returns instantly
+try:
+    get_model(MODEL_PATH)
+    _MODEL_READY = True
+except Exception as exc:
+    print(f"[WARNING] Model failed to load at startup: {exc}")
+    _MODEL_READY = False
 
 
-# ── Helpers ───────────────────────────────────────────────────────────
-
-def _tmp(suffix: str = ".jpg") -> Path:
-    return UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
-
-
-def _read_file_bytes() -> tuple[bytes, str]:
-    """
-    Accept both multipart/form-data (key='file') and application/json
-    (key='image' as base64 string, data-URI prefix stripped).
-    Returns (raw_bytes, file_suffix).
-    """
-    if request.files.get("file"):
-        f   = request.files["file"]
-        ext = Path(f.filename or "img.jpg").suffix or ".jpg"
-        return f.read(), ext
-    body = request.get_json(silent=True) or {}
-    b64  = body.get("image", "")
-    if "," in b64:
-        b64 = b64.split(",", 1)[1]
-    if not b64:
-        raise ValueError("No file uploaded and no 'image' key in JSON body.")
-    return base64.b64decode(b64), ".jpg"
-
-
-# ── Routes ────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -83,184 +59,128 @@ def index():
 
 @app.route("/health")
 def health():
-    """Used by Docker HEALTHCHECK and load-balancer probes."""
+    """Simple readiness probe consumed by the JS nav-bar indicator."""
+    global _MODEL_READY, MODEL_PATH, _IS_FALLBACK
+    # Re-resolve every time so a freshly pulled best.pt is noticed
+    MODEL_PATH, _IS_FALLBACK = _resolve_model()
+    if not _MODEL_READY or _IS_FALLBACK:
+        try:
+            get_model(MODEL_PATH)
+            _MODEL_READY = True
+        except Exception:
+            _MODEL_READY = False
     return jsonify({
-        "status":      "ok",
-        "model_ready": MODEL_PATH.exists(),
-        "model_path":  str(MODEL_PATH),
-        "conf":        CONF,
-        "iou":         IOU,
-        "ocr_enabled": RUN_OCR,
+        "model_ready":  _MODEL_READY,
+        "model_path":   MODEL_PATH,
+        "model_name":   Path(MODEL_PATH).name,
+        "is_fallback":  _IS_FALLBACK,
     })
 
 
 @app.route("/predict", methods=["POST"])
-@cross_origin()
 def predict():
     """
-    Image inference.
+    Image inference endpoint.
 
-    Accepts:
-      • multipart/form-data  key='file'
-      • application/json     key='image' (base64, data-URI ok)
-
-    Returns:
+    Expects multipart/form-data with key 'file' containing an image.
+    Returns JSON:
       {
-        image_b64   : annotated JPEG as base64,
-        detections  : [{class_name, confidence, bbox, plate_text}],
-        total       : int,
-        latency_ms  : int
+        "image_b64":   "<base64 JPEG string>",
+        "detections":  [{"class_name", "confidence", "bbox", "plate_text"}, ...],
+        "total":       <int>,
+        "latency_ms":  <int>
       }
     """
-    try:
-        raw, _ = _read_file_bytes()
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded. Send a file under the key 'file'."}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "Empty filename."}), 400
+
+    image_bytes = file.read()
+    if not image_bytes:
+        return jsonify({"error": "Uploaded file is empty."}), 400
 
     try:
-        from carPlateDetection.pipeline.prediction_pipeline import predict_image
         result = predict_image(
-            image_bytes = raw,
-            model_path  = str(MODEL_PATH.resolve()),
-            conf        = CONF,
-            iou         = IOU,
-            run_ocr     = RUN_OCR,
+            image_bytes=image_bytes,
+            model_path=MODEL_PATH,
+            conf=0.25,
+            iou=0.45,
+            run_ocr=True,
         )
         return jsonify(result)
-    except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 503
-    except Exception as e:
-        app.logger.exception("predict error")
-        return jsonify({"error": str(e)}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/predict/video", methods=["POST"])
-@cross_origin()
 def predict_video():
     """
-    Video inference.
-    Accepts multipart file (mp4/avi/mov/mkv).
-    Returns annotated MP4 as streaming download.
-    Requires opencv-python.
+    Video inference endpoint.
+
+    Accepts an MP4/AVI/MOV/MKV upload and returns an annotated MP4 video.
     """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded. Send a file under the key 'file'."}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "Empty filename."}), 400
+
+    suffix = Path(file.filename).suffix.lower() or ".mp4"
+
+    # Save upload to a temp file, run frame-by-frame inference, return result
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        file.save(tmp_in.name)
+        input_path = tmp_in.name
+
+    output_path = input_path.replace(suffix, "_out.mp4")
+
     try:
         import cv2
-    except ImportError:
-        return jsonify({"error": "opencv-python required for video. Run: pip install opencv-python"}), 500
+        from ultralytics import YOLO
 
-    if "file" not in request.files:
-        return jsonify({"error": "No file in request."}), 400
+        model = get_model(MODEL_PATH)
 
-    f      = request.files["file"]
-    suffix = Path(f.filename or "vid.mp4").suffix or ".mp4"
-    tmp_in = _tmp(f"_in{suffix}")
-    tmp_out = _tmp("_out.mp4")
-    f.save(str(tmp_in))
-
-    try:
-        from carPlateDetection.pipeline.prediction_pipeline import get_model
-        model = get_model(str(MODEL_PATH.resolve()))
-
-        cap = cv2.VideoCapture(str(tmp_in))
+        cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
             return jsonify({"error": "Cannot open video file."}), 400
 
-        w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25
-        out = cv2.VideoWriter(
-            str(tmp_out),
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            fps, (w, h),
-        )
+        fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(output_path, fourcc, fps, (fw, fh))
+
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            results = model.predict(frame, conf=CONF, iou=IOU, save=False, verbose=False)
-            out.write(results[0].plot())
+            results = model.predict(frame, conf=0.25, iou=0.45,
+                                    save=False, verbose=False)
+            annotated = results[0].plot()  # BGR numpy array
+            out.write(annotated)
+
         cap.release()
         out.release()
 
         return send_file(
-            str(tmp_out),
+            output_path,
             mimetype="video/mp4",
             as_attachment=False,
-            download_name="annotated.mp4",
         )
-    except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 503
-    except Exception as e:
-        app.logger.exception("video predict error")
-        return jsonify({"error": str(e)}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
     finally:
-        if tmp_in.exists():
-            tmp_in.unlink()
+        try:
+            os.remove(input_path)
+        except OSError:
+            pass
+        # output_path is sent via send_file — Flask handles cleanup after response
 
 
-@app.route("/train", methods=["GET", "POST"])
-@cross_origin()
-def train():
-    """
-    Trigger full DVC pipeline rerun via main.py.
-    Resets the in-memory model cache so the new weights are loaded on
-    the very next /predict call without restarting the server.
-    """
-    from carPlateDetection.pipeline.prediction_pipeline import reset_model
-    try:
-        r = subprocess.run(
-            [sys.executable, "main.py"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(Path(__file__).parent),
-        )
-        if r.returncode == 0:
-            reset_model()
-            return jsonify({"status": "success", "stdout": r.stdout[-4000:]})
-        return jsonify({"status": "error", "stderr": r.stderr[-4000:]}), 500
-    except Exception as e:
-        app.logger.exception("train trigger error")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/debug")
-def debug():
-    """
-    Diagnostic endpoint — call this to verify the pipeline without retraining.
-    Shows label counts, a sample label line, and the latest eval metrics.
-    """
-    import glob as _glob
-    import random as _rand
-
-    info: dict = {}
-    for split in ["train", "valid", "test"]:
-        txts = _glob.glob(f"artifacts/data_transformation/{split}/labels/*.txt")
-        xmls = _glob.glob(f"artifacts/data_ingestion/{split}/labels/*.xml")
-        imgs = _glob.glob(f"artifacts/data_transformation/{split}/images/*")
-        ne   = [f for f in txts if Path(f).read_text().strip()]
-        info[split] = {
-            "images":        len(imgs),
-            "txt_labels":    len(txts),
-            "xml_source":    len(xmls),
-            "non_empty_txt": len(ne),
-            "sample_label":  Path(_rand.choice(ne)).read_text()[:120] if ne else "EMPTY",
-        }
-
-    info["model_ready"] = MODEL_PATH.exists()
-    m = Path("artifacts/model_evaluation/metrics.json")
-    info["metrics"] = json.loads(m.read_text()) if m.exists() else "not found"
-    return jsonify(info)
-
-
-# ── Entry point ───────────────────────────────────────────────────────
-
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  PlateVision — YOLOv8 Licence Plate API")
-    print(f"  Model  : {MODEL_PATH}  (exists={MODEL_PATH.exists()})")
-    print(f"  CONF   : {CONF}   IOU : {IOU}   OCR : {RUN_OCR}")
-    print(f"  URL    : http://localhost:{PORT}")
-    print("=" * 55)
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
