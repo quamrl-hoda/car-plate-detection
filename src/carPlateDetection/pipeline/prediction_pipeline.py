@@ -14,6 +14,15 @@ import io, re, base64, threading, time
 from pathlib import Path
 from carPlateDetection import logger
 
+# ── Tesseract path (Windows) ──────────────────────────────────────
+try:
+    import pytesseract as _pt
+    _TESS = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    if Path(_TESS).exists():
+        _pt.pytesseract.tesseract_cmd = _TESS
+except ImportError:
+    pass
+
 # ── Model singleton (thread-safe) ─────────────────────────────────
 _model             = None
 _model_path_loaded = None
@@ -65,39 +74,27 @@ def reset_model():
     logger.info("Model cache cleared — will reload on next inference.")
 
 
-# ── OCR — pre-import pytesseract once so errors are visible ───────
-import os as _os
-
-_pytesseract = None
-try:
-    import pytesseract as _pytesseract_mod
-    # Point to the Windows binary (UB-Mannheim default install path)
-    if _os.name == "nt":
-        for _tess_path in [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        ]:
-            if _os.path.isfile(_tess_path):
-                _pytesseract_mod.pytesseract.tesseract_cmd = _tess_path
-                break
-    _pytesseract = _pytesseract_mod
-    logger.info("pytesseract loaded — OCR enabled")
-except Exception as _e:
-    logger.warning(
-        f"pytesseract import failed — OCR disabled. "
-        f"Fix: uv pip install --upgrade pyarrow   Error: {_e}"
-    )
-
+# ── OCR ───────────────────────────────────────────────────────────
 
 def ocr_plate(bgr_crop) -> str:
     """
     Tesseract OCR on a plate crop (BGR numpy array).
-    Returns "" silently if pytesseract/tesseract is not available.
+    Returns "" if tesseract not installed — never crashes.
+
+    Preprocessing:
+      1. Grayscale
+      2. Upscale to min 100px height (Tesseract needs large text)
+      3. CLAHE adaptive contrast
+      4. Gaussian blur (denoise)
+      5. Otsu threshold
+      6. Morphological close (reconnect broken letter strokes)
+      7. psm 7 = single text line + alphanumeric whitelist
+      8. Strip non-alphanumeric output
     """
-    if bgr_crop is None or bgr_crop.size == 0 or _pytesseract is None:
+    if bgr_crop is None or bgr_crop.size == 0:
         return ""
     try:
-        import cv2
+        import cv2, pytesseract
         gray  = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2GRAY)
         h, w  = gray.shape
         scale = max(3.0, 100.0 / h) if h > 0 else 3.0
@@ -113,7 +110,7 @@ def ocr_plate(bgr_crop) -> str:
         cfg   = ("--psm 7 --oem 3 "
                  "-c tessedit_char_whitelist="
                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-        text  = _pytesseract.image_to_string(th, config=cfg).strip()
+        text  = pytesseract.image_to_string(th, config=cfg).strip()
         return re.sub(r"[^A-Z0-9 ]", "", text.upper()).strip()
     except Exception:
         return ""
@@ -173,59 +170,10 @@ def predict_image(
             "plate_text": plate_text,
         })
 
-    # ── Draw annotations — notebook style ────────────────────────────
-    # Green box + large red confidence % + white label box with plate text
-    annotated = img_bgr.copy()
-    try:
-        import cv2
-
-        for det in detections:
-            x1, y1, x2, y2 = det["bbox"]
-            pct_text  = f"{det['confidence'] * 100:.2f}%"
-            plate_txt = det["plate_text"]
-            font      = cv2.FONT_HERSHEY_SIMPLEX
-            box_w     = max(x2 - x1, 1)
-
-            # 1. Thick green bounding box
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 3)
-
-            # 2. Large bold RED confidence % above the box
-            conf_scale = max(1.4, box_w / 80)
-            conf_thick = max(3, int(conf_scale * 2))
-            (_, ch), _ = cv2.getTextSize(pct_text, font, conf_scale, conf_thick)
-            cy = max(y1 - 8, ch + 4)
-            cv2.putText(annotated, pct_text,
-                        (x1, cy), font, conf_scale,
-                        (0, 0, 255), conf_thick, cv2.LINE_AA)
-
-            # 3. Solid white label box with green border + dark plate text
-            if plate_txt:
-                lbl_scale = max(0.9, box_w / 120)
-                lbl_thick = max(2, int(lbl_scale * 2))
-                (pw, ph), lb = cv2.getTextSize(plate_txt, font, lbl_scale, lbl_thick)
-                px, py = 8, 6
-                lx1, ly1 = x1, y2 - ph - lb - py * 2
-                lx2, ly2 = x1 + pw + px * 2, y2
-                cv2.rectangle(annotated, (lx1, ly1), (lx2, ly2), (255, 255, 255), -1)
-                cv2.rectangle(annotated, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
-                cv2.putText(annotated, plate_txt,
-                            (lx1 + px, ly2 - lb - py),
-                            font, lbl_scale, (20, 20, 20),
-                            lbl_thick, cv2.LINE_AA)
-
-    except ImportError:
-        annotated = results[0].plot()   # fallback if cv2 missing
-
     return {
-        "image_b64":  _bgr_to_b64jpeg(annotated),
+        "image_b64":  _bgr_to_b64jpeg(results[0].plot()),
         "detections": detections,
         "total":      len(detections),
         "latency_ms": ms,
-        "img_shape":  list(img_bgr.shape[:2]),
-        "speed": {
-            "preprocess_ms":  round(results[0].speed.get("preprocess",  0), 1),
-            "inference_ms":   round(results[0].speed.get("inference",   ms), 1),
-            "postprocess_ms": round(results[0].speed.get("postprocess", 0), 1),
-        },
         "model_used": _model_path_loaded or "unknown",
     }

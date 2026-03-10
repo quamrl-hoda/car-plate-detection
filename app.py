@@ -1,56 +1,72 @@
 """
-app.py — Flask web server for PlateVision
-==========================================
-Serves the HTML frontend and provides three REST endpoints:
+app.py
+======
+Flask API — direct translation of the Streamlit app.
 
-  GET  /              → renders templates/index.html
-  GET  /health        → JSON model readiness probe
-  POST /predict       → image inference (returns annotated image + detections)
-  POST /predict/video → video inference (returns annotated MP4)
+Model path: artifacts/model_trainer/car_plate_detector/weights/best.pt
+            (same as /Users/.../best.pt in the Streamlit app)
+
+Routes:
+  GET  /              Web UI
+  GET  /health        Model status
+  POST /predict       Image inference  (multipart file or base64 JSON)
+  POST /predict/video Video inference  (multipart file → MP4)
+  GET  /train         Re-run full DVC training pipeline
+  GET  /debug         Diagnose labels + metrics
 """
-
-import io
-import os
-import tempfile
-import time
+import io, json, os, sys, uuid, base64, subprocess
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 
-# ── App setup ────────────────────────────────────────────────────────────────
-app = Flask(__name__, template_folder="templates", static_folder="static")
+# ── Tesseract path (Windows) ──────────────────────────────────────
+# Change this path if you installed Tesseract somewhere else
+try:
+    import pytesseract
+    pytesseract.pytesseract.tesseract_cmd = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
+except ImportError:
+    pass  # pytesseract not installed — OCR will be disabled
+
+# Windows UTF-8 fix (YOLO logs contain emoji)
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+os.putenv("LANG", "en_US.UTF-8")
+os.putenv("LC_ALL", "en_US.UTF-8")
+
+app = Flask(__name__)
 CORS(app)
 
-# ── Model path resolution ─────────────────────────────────────────────────────
-# Prefer a trained best.pt; fall back to the pretrained yolov8n checkpoint.
-_TRAINED_MODEL  = Path("artifacts/model_trainer/car_plate_detector/weights/best.pt")
-_FALLBACK_MODEL = Path("yolov8n.pt")
-
-def _resolve_model() -> tuple[str, bool]:
-    """Return (model_path, is_fallback). Re-checks disk each call so dvc pull is picked up."""
-    if _TRAINED_MODEL.exists():
-        return str(_TRAINED_MODEL), False
-    return str(_FALLBACK_MODEL), True
-
-MODEL_PATH, _IS_FALLBACK = _resolve_model()
-
-# ── Lazy-load YOLO via the prediction pipeline ───────────────────────────────
-from src.carPlateDetection.pipeline.prediction_pipeline import (
-    get_model,
-    predict_image,
-)
-
-# Pre-warm the model at startup so /health returns instantly
-try:
-    get_model(MODEL_PATH)
-    _MODEL_READY = True
-except Exception as exc:
-    print(f"[WARNING] Model failed to load at startup: {exc}")
-    _MODEL_READY = False
+# ── Settings ──────────────────────────────────────────────────────
+CONF    = float(os.getenv("YOLO_CONF", "0.25"))
+IOU     = float(os.getenv("YOLO_IOU",  "0.45"))
+RUN_OCR = os.getenv("YOLO_OCR", "1") == "1"
+PORT    = int(os.getenv("PORT", "8080"))
+TEMP    = Path("temp"); TEMP.mkdir(exist_ok=True)   # mirrors Streamlit's "temp" folder
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+def _tmp(suffix=".jpg"):
+    return TEMP / f"{uuid.uuid4().hex}{suffix}"
+
+
+def _parse_request():
+    """Accept multipart file OR base64 JSON. Returns (raw_bytes, suffix)."""
+    if request.files.get("file"):
+        f = request.files["file"]
+        return f.read(), Path(f.filename or "img.jpg").suffix or ".jpg"
+    body = request.get_json(silent=True) or {}
+    b64  = body.get("image", "")
+    if "," in b64:
+        b64 = b64.split(",", 1)[1]
+    if not b64:
+        raise ValueError("Send multipart key='file' OR JSON {'image': base64_string}")
+    return base64.b64decode(b64), ".jpg"
+
+
+# ── Routes ────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -59,128 +75,142 @@ def index():
 
 @app.route("/health")
 def health():
-    """Simple readiness probe consumed by the JS nav-bar indicator."""
-    global _MODEL_READY, MODEL_PATH, _IS_FALLBACK
-    # Re-resolve every time so a freshly pulled best.pt is noticed
-    MODEL_PATH, _IS_FALLBACK = _resolve_model()
-    if not _MODEL_READY or _IS_FALLBACK:
-        try:
-            get_model(MODEL_PATH)
-            _MODEL_READY = True
-        except Exception:
-            _MODEL_READY = False
+    from carPlateDetection.pipeline.prediction_pipeline import active_model_path, model_ready
+    m_path = Path("artifacts/model_evaluation/metrics.json")
+    metrics = json.loads(m_path.read_text()) if m_path.exists() else {}
     return jsonify({
-        "model_ready":  _MODEL_READY,
-        "model_path":   MODEL_PATH,
-        "model_name":   Path(MODEL_PATH).name,
-        "is_fallback":  _IS_FALLBACK,
+        "status":       "ok",
+        "model_ready":  model_ready(),
+        "active_model": active_model_path(),
+        "metrics":      metrics,
+        "conf":         CONF,
+        "iou":          IOU,
+        "ocr_enabled":  RUN_OCR,
     })
 
 
 @app.route("/predict", methods=["POST"])
+@cross_origin()
 def predict():
-    """
-    Image inference endpoint.
-
-    Expects multipart/form-data with key 'file' containing an image.
-    Returns JSON:
-      {
-        "image_b64":   "<base64 JPEG string>",
-        "detections":  [{"class_name", "confidence", "bbox", "plate_text"}, ...],
-        "total":       <int>,
-        "latency_ms":  <int>
-      }
-    """
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded. Send a file under the key 'file'."}), 400
-
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "Empty filename."}), 400
-
-    image_bytes = file.read()
-    if not image_bytes:
-        return jsonify({"error": "Uploaded file is empty."}), 400
-
+    """Image inference — mirrors predict_and_save_image() exactly."""
     try:
-        result = predict_image(
-            image_bytes=image_bytes,
-            model_path=MODEL_PATH,
-            conf=0.25,
-            iou=0.45,
-            run_ocr=True,
-        )
-        return jsonify(result)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        raw, _ = _parse_request()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        from carPlateDetection.pipeline.prediction_pipeline import predict_image
+        return jsonify(predict_image(raw, conf=CONF, iou=IOU, run_ocr=RUN_OCR))
+    except Exception as e:
+        app.logger.exception("predict error")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/predict/video", methods=["POST"])
+@cross_origin()
 def predict_video():
-    """
-    Video inference endpoint.
-
-    Accepts an MP4/AVI/MOV/MKV upload and returns an annotated MP4 video.
-    """
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded. Send a file under the key 'file'."}), 400
-
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "Empty filename."}), 400
-
-    suffix = Path(file.filename).suffix.lower() or ".mp4"
-
-    # Save upload to a temp file, run frame-by-frame inference, return result
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
-        file.save(tmp_in.name)
-        input_path = tmp_in.name
-
-    output_path = input_path.replace(suffix, "_out.mp4")
-
+    """Video inference — mirrors predict_and_plot_video() exactly."""
     try:
         import cv2
-        from ultralytics import YOLO
+    except ImportError:
+        return jsonify({"error": "pip install opencv-python"}), 500
 
-        model = get_model(MODEL_PATH)
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-        cap = cv2.VideoCapture(input_path)
+    f     = request.files["file"]
+    ext   = Path(f.filename or "vid.mp4").suffix or ".mp4"
+    in_p  = _tmp(f"_in{ext}")
+    out_p = _tmp("_out.mp4")
+    f.save(str(in_p))
+
+    try:
+        from carPlateDetection.pipeline.prediction_pipeline import get_model
+        model = get_model()
+
+        cap = cv2.VideoCapture(str(in_p))
         if not cap.isOpened():
-            return jsonify({"error": "Cannot open video file."}), 400
+            return jsonify({"error": "Cannot open video file"}), 400
 
-        fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (fw, fh))
-
-        while True:
+        fw  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        fh  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS)) or 25
+        out = cv2.VideoWriter(str(out_p),
+                              cv2.VideoWriter_fourcc(*"mp4v"), fps, (fw, fh))
+        while cap.isOpened():
             ret, frame = cap.read()
-            if not ret:
-                break
-            results = model.predict(frame, conf=0.25, iou=0.45,
-                                    save=False, verbose=False)
-            annotated = results[0].plot()  # BGR numpy array
-            out.write(annotated)
-
+            if not ret: break
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results   = model.predict(rgb_frame, device="cpu",
+                                      save=False, verbose=False)
+            for result in results:
+                for box in result.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    confidence      = box.conf[0]
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{float(confidence)*100:.2f}%",
+                                (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.9, (255, 0, 0), 2)
+            out.write(frame)
         cap.release()
         out.release()
-
-        return send_file(
-            output_path,
-            mimetype="video/mp4",
-            as_attachment=False,
-        )
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return send_file(str(out_p), mimetype="video/mp4",
+                         as_attachment=False, download_name="annotated.mp4")
+    except Exception as e:
+        app.logger.exception("video error")
+        return jsonify({"error": str(e)}), 500
     finally:
-        try:
-            os.remove(input_path)
-        except OSError:
-            pass
-        # output_path is sent via send_file — Flask handles cleanup after response
+        if in_p.exists(): in_p.unlink()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+@app.route("/train", methods=["GET", "POST"])
+@cross_origin()
+def train():
+    from carPlateDetection.pipeline.prediction_pipeline import reset_model
+    try:
+        r = subprocess.run(
+            [sys.executable, "main.py"],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            cwd=str(Path(__file__).parent),
+        )
+        if r.returncode == 0:
+            reset_model()
+            return jsonify({"status": "success", "stdout": r.stdout[-4000:]})
+        return jsonify({"status": "error", "stderr": r.stderr[-4000:]}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/debug")
+def debug():
+    import glob as g, random as rnd
+    info = {}
+    for split in ["train", "valid", "test"]:
+        txts = g.glob(f"artifacts/data_transformation/{split}/labels/*.txt")
+        xmls = g.glob(f"artifacts/data_ingestion/{split}/labels/*.xml")
+        imgs = g.glob(f"artifacts/data_transformation/{split}/images/*")
+        ne   = [f for f in txts if Path(f).read_text().strip()]
+        info[split] = {
+            "images":        len(imgs),
+            "txt_labels":    len(txts),
+            "xml_source":    len(xmls),
+            "non_empty_txt": len(ne),
+            "sample":        Path(rnd.choice(ne)).read_text()[:80] if ne else "EMPTY",
+        }
+    m = Path("artifacts/model_evaluation/metrics.json")
+    info["metrics"] = json.loads(m.read_text()) if m.exists() else "not found"
+    from carPlateDetection.pipeline.prediction_pipeline import active_model_path
+    info["active_model"] = active_model_path()
+    return jsonify(info)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    from carPlateDetection.pipeline.prediction_pipeline import active_model_path, model_ready
+    print("=" * 55)
+    print("  PlateVision — YOLOv8 Licence Plate Detection")
+    print(f"  Model  : {active_model_path()}")
+    print(f"  Ready  : {model_ready()}")
+    print(f"  CONF:{CONF}  IOU:{IOU}  OCR:{RUN_OCR}  PORT:{PORT}")
+    print(f"  URL    : http://localhost:{PORT}")
+    print("=" * 55)
+    app.run(host="0.0.0.0", port=PORT, debug=False)
